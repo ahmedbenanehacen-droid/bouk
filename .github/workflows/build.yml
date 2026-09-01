@@ -1,0 +1,167 @@
+name: APK BOUK
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Reconstituer le jeu
+        run: |
+          mkdir -p www
+          cat game/part1.b64 game/part2.b64 game/part3.b64 game/part4.b64 | base64 -d | xz -d > www/index.html
+          echo "9dde38d0693062e5347e64528dc17b235b5b3c40502b33b5f2bfd6756698fa56  www/index.html" | sha256sum -c -
+          ls -l www/index.html
+
+      - name: Projet Capacitor
+        run: |
+          cat > package.json <<'JSON'
+          {
+            "name": "bouk",
+            "version": "1.2.0",
+            "private": true,
+            "author": "Hacen AHMED BENANE",
+            "description": "BOUK - jeu de cartes a 4 joueurs (CENT et SALAD)"
+          }
+          JSON
+          cat > capacitor.config.json <<'JSON'
+          {
+            "appId": "com.bouk.jeu",
+            "appName": "BOUK",
+            "webDir": "www",
+            "android": { "backgroundColor": "#17564A" },
+            "server": { "androidScheme": "https" }
+          }
+          JSON
+          npm install @capacitor/core@6 @capacitor/cli@6 @capacitor/android@6 --no-audit --no-fund
+          npx cap add android
+          npx cap sync android
+
+      - name: Personnalisation
+        run: |
+          python3 -m pip install --quiet pillow
+          python3 - <<'PY'
+          import os, glob
+          p='android/app/src/main/AndroidManifest.xml'
+          s=open(p).read()
+          s=s.replace('android:name=".MainActivity"',
+                      'android:name=".MainActivity"' + chr(10) + '            android:screenOrientation="portrait"')
+          open(p,'w').write(s)
+          g='android/app/build.gradle'
+          b=open(g).read().replace('versionName "1.0"','versionName "1.2.0"')
+          open(g,'w').write(b)
+          print('portrait et version appliques')
+          try:
+              from PIL import Image, ImageDraw, ImageFont, ImageFilter
+          except Exception as e:
+              print('pillow absent, icones ignorees'); raise SystemExit(0)
+          RES='android/app/src/main/res'
+          SERIF='/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf'
+          SANS='/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf'
+          def font(path,size):
+              for q in (path, SANS):
+                  if os.path.exists(q):
+                      return ImageFont.truetype(q,size)
+              return ImageFont.load_default()
+          FELT2=(15,66,56); BRASS=(201,155,74); CREAM=(241,232,214); RED=(200,90,74)
+          def bg(size):
+              w,h=size
+              img=Image.new('RGB',(w,h),FELT2); d=ImageDraw.Draw(img)
+              cx,cy=w//2,int(h*0.42); r=int(max(w,h)*0.62)
+              for i in range(r,0,-max(1,r//90)):
+                  t=i/r
+                  c=(int(FELT2[0]+(44-FELT2[0])*(1-t)),int(FELT2[1]+(115-FELT2[1])*(1-t)),int(FELT2[2]+(100-FELT2[2])*(1-t)))
+                  d.ellipse([cx-i,cy-i,cx+i,cy+i],fill=c)
+              return img.filter(ImageFilter.GaussianBlur(max(1,w//60)))
+          def mark(img,box,scale=1.0):
+              d=ImageDraw.Draw(img); x0,y0,x1,y1=box; w=x1-x0; h=y1-y0
+              f=font(SERIF,int(h*0.62*scale))
+              bb=d.textbbox((0,0),'B',font=f); tw,th=bb[2]-bb[0],bb[3]-bb[1]
+              cx=x0+w/2; cy=y0+h*0.44
+              d.text((cx-tw/2-bb[0],cy-th/2-bb[1]),'B',font=f,fill=BRASS)
+              fs=font(SANS,int(h*0.15*scale)); sy=y0+h*0.80; gap=int(h*0.06)
+              suits=[('H',RED),('S',CREAM)]
+              ws=[d.textbbox((0,0),s,font=fs)[2]-d.textbbox((0,0),s,font=fs)[0] for s,_ in suits]
+              x=cx-(sum(ws)+gap)/2
+              for (s,col),wd in zip(suits,ws):
+                  b2=d.textbbox((0,0),s,font=fs); d.text((x-b2[0],sy-b2[1]),s,font=fs,fill=col); x+=wd+gap
+          def rounded(size,r):
+              m=Image.new('L',size,0); ImageDraw.Draw(m).rounded_rectangle([0,0,size[0]-1,size[1]-1],radius=r,fill=255); return m
+          def circle(size):
+              m=Image.new('L',size,0); ImageDraw.Draw(m).ellipse([0,0,size[0]-1,size[1]-1],fill=255); return m
+          for f in sorted(glob.glob(RES+'/mipmap-*/ic_launcher.png')):
+              s=Image.open(f).size[0]; img=bg((s,s)).convert('RGBA'); mark(img,(0,0,s,s),0.92)
+              o=Image.new('RGBA',(s,s),(0,0,0,0)); o.paste(img,(0,0),rounded((s,s),int(s*0.22))); o.save(f)
+              o2=Image.new('RGBA',(s,s),(0,0,0,0)); o2.paste(img,(0,0),circle((s,s)))
+              o2.save(f.replace('ic_launcher.png','ic_launcher_round.png'))
+          for f in sorted(glob.glob(RES+'/mipmap-*/ic_launcher_foreground.png')):
+              s=Image.open(f).size[0]; img=Image.new('RGBA',(s,s),(0,0,0,0)); pd=s*0.20
+              mark(img,(pd,pd,s-pd,s-pd),1.0); img.save(f)
+          for f in sorted(glob.glob(RES+'/drawable*/splash.png')):
+              w,h=Image.open(f).size; img=bg((w,h)).convert('RGB'); d=ImageDraw.Draw(img)
+              size=int(min(w,h)*0.20); fw=font(SERIF,size)
+              bb=d.textbbox((0,0),'BOUK',font=fw); tw,th=bb[2]-bb[0],bb[3]-bb[1]
+              d.text((w/2-tw/2-bb[0],h/2-th/2-bb[1]-h*0.03),'BOUK',font=fw,fill=CREAM)
+              img.save(f)
+          bgx=RES+'/values/ic_launcher_background.xml'
+          if os.path.exists(bgx):
+              open(bgx,'w').write('''<?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <color name="ic_launcher_background">#17564A</color>
+          </resources>
+          ''')
+          print('icones generees')
+          PY
+
+      - name: Compiler l'APK
+        run: |
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon --stacktrace
+
+      - name: Preparer l'APK
+        run: |
+          mkdir -p apk
+          cp android/app/build/outputs/apk/debug/app-debug.apk apk/BOUK-1.2.0.apk
+          ls -lh apk
+
+      - name: Publier dans l'onglet Actions
+        uses: actions/upload-artifact@v4
+        with:
+          name: bouk-apk
+          path: apk/BOUK-1.2.0.apk
+          if-no-files-found: error
+
+      - name: Publier sur la branche apk
+        continue-on-error: true
+        run: |
+          cp apk/BOUK-1.2.0.apk /tmp/BOUK-1.2.0.apk
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout --orphan apk-tmp
+          git rm -rf --cached . > /dev/null 2>&1 || true
+          find . -maxdepth 1 -mindepth 1 -not -name .git -exec rm -rf {} +
+          cp /tmp/BOUK-1.2.0.apk .
+          git add BOUK-1.2.0.apk
+          git commit -q -m "APK BOUK 1.2.0"
+          git push -f origin apk-tmp:apk
+          echo "APK publie sur la branche apk"
