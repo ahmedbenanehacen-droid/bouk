@@ -1,0 +1,88 @@
+name: Site BOUK
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  site:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Reconstituer le jeu
+        run: |
+          mkdir -p /tmp/site
+          cat game/part1.b64 game/part2.b64 game/part3.b64 game/part4.b64 | base64 -d | xz -d > /tmp/site/index.html
+          cat game/patch1a.b64 game/patch1b.b64 | base64 -d | xz -d > /tmp/d1.diff
+          patch -s /tmp/site/index.html < /tmp/d1.diff
+          cat game/patch2a.b64 game/patch2b.b64 | base64 -d | xz -d > /tmp/d2.diff
+          patch -s /tmp/site/index.html < /tmp/d2.diff
+          cat game/patch3.b64 | base64 -d | xz -d > /tmp/d3.diff
+          patch -s /tmp/site/index.html < /tmp/d3.diff
+          echo "7bb272026c70818d44ceb81db05d7e9949fbc4110ee7b73e6685bd59403e294a  /tmp/site/index.html" | sha256sum -c -
+
+      - name: Application installable
+        run: |
+          python3 -m pip install --quiet pillow
+          python3 tools/icones.py web /tmp/site
+          python3 - <<'PY'
+          import hashlib, json
+          S='/tmp/site'
+          man={"name":"BOUK","short_name":"BOUK",
+               "description":"Jeu de cartes a 4 joueurs : tours de CENT et de SALAD",
+               "start_url":"./","scope":"./","display":"standalone","orientation":"portrait",
+               "background_color":"#17564A","theme_color":"#17564A","lang":"fr",
+               "icons":[{"src":"icon-192.png","sizes":"192x192","type":"image/png"},
+                        {"src":"icon-512.png","sizes":"512x512","type":"image/png"},
+                        {"src":"icon-maskable-512.png","sizes":"512x512","type":"image/png","purpose":"maskable"}]}
+          open(S+'/manifest.webmanifest','w').write(json.dumps(man,indent=2))
+          html=open(S+'/index.html').read()
+          ver=hashlib.sha256(html.encode()).hexdigest()[:12]
+          nl=chr(10)
+          sw=("const CACHE='bouk-"+ver+"';"+nl+
+              "const FILES=['./','./index.html','./manifest.webmanifest','./icon-180.png','./icon-192.png','./icon-512.png'];"+nl+
+              "self.addEventListener('install',e=>{e.waitUntil(caches.open(CACHE).then(c=>c.addAll(FILES)).then(()=>self.skipWaiting()));});"+nl+
+              "self.addEventListener('activate',e=>{e.waitUntil(caches.keys().then(k=>Promise.all(k.filter(x=>x!==CACHE).map(x=>caches.delete(x)))).then(()=>self.clients.claim()));});"+nl+
+              "self.addEventListener('fetch',e=>{"+nl+
+              "  if(e.request.method!=='GET') return;"+nl+
+              "  const u=new URL(e.request.url);"+nl+
+              "  if(u.origin!==location.origin) return;"+nl+
+              "  e.respondWith(fetch(e.request).then(r=>{const cp=r.clone();caches.open(CACHE).then(c=>c.put(e.request,cp));return r;})"+nl+
+              "    .catch(()=>caches.match(e.request).then(r=>r||caches.match('./index.html'))));"+nl+
+              "});"+nl)
+          open(S+'/sw.js','w').write(sw)
+          tete=('<link rel="manifest" href="manifest.webmanifest">'+nl+
+                '<link rel="apple-touch-icon" href="icon-180.png">'+nl+
+                '<meta name="apple-mobile-web-app-title" content="BOUK">'+nl+
+                '<meta name="application-name" content="BOUK">'+nl+
+                '<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">'+nl+
+                '</head>')
+          html=html.replace('</head>',tete,1)
+          reg=("<script>if('serviceWorker' in navigator){window.addEventListener('load',function(){"
+               "navigator.serviceWorker.register('sw.js').catch(function(){});});}</script>"+nl+'</body>')
+          html=html.replace('</body>',reg,1)
+          open(S+'/index.html','w').write(html)
+          print('application installable prete, version', ver)
+          PY
+          ls -l /tmp/site
+
+      - name: Publier sur gh-pages
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout --orphan pages-tmp
+          git rm -rf --cached . > /dev/null 2>&1 || true
+          find . -maxdepth 1 -mindepth 1 -not -name .git -exec rm -rf {} +
+          cp /tmp/site/index.html index.html
+          cp /tmp/site/index.html 404.html
+          cp /tmp/site/manifest.webmanifest /tmp/site/sw.js /tmp/site/icon-*.png .
+          touch .nojekyll
+          git add -A
+          git commit -q -m "Site BOUK installable"
+          git push -f origin pages-tmp:gh-pages
+          echo "site publie"
