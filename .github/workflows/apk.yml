@@ -1,0 +1,106 @@
+name: APK BOUK
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Reconstituer le jeu
+        run: |
+          mkdir -p www
+          cat game/part1.b64 game/part2.b64 game/part3.b64 game/part4.b64 | base64 -d | xz -d > www/index.html
+          cat game/patch1a.b64 game/patch1b.b64 | base64 -d | xz -d > /tmp/d1.diff
+          patch -s www/index.html < /tmp/d1.diff
+          cat game/patch2a.b64 game/patch2b.b64 | base64 -d | xz -d > /tmp/d2.diff
+          patch -s www/index.html < /tmp/d2.diff
+          cat game/patch3.b64 | base64 -d | xz -d > /tmp/d3.diff
+          patch -s www/index.html < /tmp/d3.diff
+          echo "7bb272026c70818d44ceb81db05d7e9949fbc4110ee7b73e6685bd59403e294a  www/index.html" | sha256sum -c -
+
+      - name: Projet Capacitor
+        run: |
+          cat > package.json <<'JSON'
+          { "name": "bouk", "version": "2.0.0", "private": true, "author": "Hacen AHMED BENANE" }
+          JSON
+          cat > capacitor.config.json <<'JSON'
+          {
+            "appId": "com.bouk.jeu",
+            "appName": "BOUK",
+            "webDir": "www",
+            "android": { "backgroundColor": "#17564A" },
+            "server": { "androidScheme": "https" }
+          }
+          JSON
+          npm install @capacitor/core@6 @capacitor/cli@6 @capacitor/android@6 --no-audit --no-fund
+          npx cap add android
+          npx cap sync android
+
+      - name: Personnalisation
+        run: |
+          python3 -m pip install --quiet pillow
+          python3 tools/icones.py android android/app/src/main/res
+          python3 - <<'PY'
+          p='android/app/src/main/AndroidManifest.xml'
+          s=open(p).read()
+          s=s.replace('android:name=".MainActivity"',
+                      'android:name=".MainActivity"'+chr(10)+'            android:screenOrientation="portrait"')
+          open(p,'w').write(s)
+          g='android/app/build.gradle'
+          b=open(g).read().replace('versionName "1.0"','versionName "2.0.0"').replace('versionCode 1','versionCode 4')
+          open(g,'w').write(b)
+          print('portrait et version appliques')
+          PY
+
+      - name: Compiler l'APK
+        run: |
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon --stacktrace
+
+      - name: Preparer l'APK
+        run: |
+          mkdir -p apk
+          cp android/app/build/outputs/apk/debug/app-debug.apk apk/BOUK-2.0.0.apk
+          ls -lh apk
+
+      - name: Publier dans l'onglet Actions
+        uses: actions/upload-artifact@v4
+        with:
+          name: bouk-apk
+          path: apk/BOUK-2.0.0.apk
+          if-no-files-found: error
+
+      - name: Publier sur la branche apk
+        continue-on-error: true
+        run: |
+          cp apk/BOUK-2.0.0.apk /tmp/BOUK-2.0.0.apk
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout --orphan apk-tmp
+          git rm -rf --cached . > /dev/null 2>&1 || true
+          find . -maxdepth 1 -mindepth 1 -not -name .git -exec rm -rf {} +
+          cp /tmp/BOUK-2.0.0.apk .
+          git add BOUK-2.0.0.apk
+          git commit -q -m "APK BOUK 2.0.0"
+          git push -f origin apk-tmp:apk
+          echo "APK publie sur la branche apk"
